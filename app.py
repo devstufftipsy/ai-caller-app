@@ -2,11 +2,12 @@ from flask import Flask, request, Response
 from groq import Groq
 import os
 import httpx
-from urllib.parse import quote # Import the URL encoding tool
+from urllib.parse import quote
+from twilio.twiml.voice_response import VoiceResponse
+from twilio.rest import Client
 
 app = Flask(__name__)
 
-# --- The NEW, SMARTER System Prompt ---
 SYSTEM_PROMPT_TEMPLATE = """
 You are 'Alex', a friendly and professional marketing agent for 'Pixel Perfect'.
 Your goal is to speak with {user_name} about a free trial of a new AI-powered photo editing software.
@@ -14,7 +15,8 @@ Keep your responses very short, natural, and conversational, like a real human o
 Never say you are an AI.
 """
 
-def stream_elevenlabs_audio(text_to_speak):
+def generate_audio_stream(text_to_speak):
+    """A generator function that yields audio chunks from ElevenLabs."""
     ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY")
     VOICE_ID = "21m00Tcm4TlvDq8ikWAM"
 
@@ -30,13 +32,14 @@ def stream_elevenlabs_audio(text_to_speak):
         "voice_settings": {"stability": 0.5, "similarity_boost": 0.75}
     }
 
+    # Use httpx to make the streaming request to ElevenLabs
     with httpx.stream("POST", url, json=data, headers=headers, timeout=20) as r:
-        return Response(r.iter_bytes(chunk_size=1024), mimetype="audio/mpeg")
+        # Yield each chunk of audio data as it's received
+        for chunk in r.iter_bytes(chunk_size=1024):
+            yield chunk
 
 @app.route("/voice", methods=['POST'])
 def voice():
-    from twilio.twiml.voice_response import VoiceResponse
-
     user_name = request.cookies.get('user_name', 'the user')
     system_prompt = SYSTEM_PROMPT_TEMPLATE.format(user_name=user_name)
 
@@ -63,14 +66,14 @@ def voice():
         print(f"Error calling Groq: {e}")
 
     response = VoiceResponse()
-
-    # --- THIS IS THE FIX ---
-    # We now safely encode the AI's response before putting it in the URL.
     encoded_text = quote(ai_response)
     audio_stream_url = f"{request.host_url}audio-stream?text={encoded_text}"
 
     response.play(audio_stream_url)
+    # Add a gather to listen for the user's response after the audio plays
     response.gather(input='speech', action='/voice', speechTimeout='auto', enhanced="true")
+    # Add a redirect in case the gather fails
+    response.redirect('/voice')
 
     resp = app.make_response(str(response))
     resp.set_cookie('conversation', conversation)
@@ -80,24 +83,24 @@ def voice():
 @app.route("/audio-stream")
 def audio_stream():
     text_to_speak = request.args.get("text", "Hello there!")
-    return stream_elevenlabs_audio(text_to_speak)
+    # Return the generator function wrapped in a Flask Response
+    return Response(generate_audio_stream(text_to_speak), mimetype="audio/mpeg")
 
 @app.route('/make-call/<user_name>')
 def make_call(user_name):
-    from twilio.rest import Client
     try:
         client = Client(os.environ.get('TWILIO_ACCOUNT_SID'), os.environ.get('TWILIO_AUTH_TOKEN'))
         voice_url = f"{request.host_url}voice"
 
         call = client.calls.create(
-                                to=os.environ.get('MY_PHONE_NUMBER'),
-                                from_=os.environ.get('TWILIO_PHONE_NUMBER'),
-                                url=voice_url
-                            )
+            to=os.environ.get('MY_PHONE_NUMBER'),
+            from_=os.environ.get('TWILIO_PHONE_NUMBER'),
+            url=voice_url
+        )
 
         resp = app.make_response(f"Success! Initiating call to {user_name}. SID: {call.sid}")
         resp.set_cookie('user_name', user_name)
-        resp.set_cookie('conversation', expires=0)
+        resp.set_cookie('conversation', expires=0) # Clear old conversation
         return resp
 
     except Exception as e:
