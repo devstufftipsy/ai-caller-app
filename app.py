@@ -15,7 +15,7 @@ MY_PHONE_NUMBER = os.environ.get('MY_PHONE_NUMBER')
 def voice():
     from twilio.twiml.voice_response import VoiceResponse
     response = VoiceResponse()
-    response.say("Hello Nisarg. This is the n2n AI agent calling. The outbound calling test is successful.", voice='alice')
+    response.say("Hello. This is the n2n AI agent calling. The outbound calling test is successful.", voice='alice')
     response.hangup()
     return str(response)
 
