@@ -4,44 +4,55 @@ from twilio.rest import Client
 import os
 import json
 from google.cloud import texttospeech
+from google.oauth2 import service_account # Import the service_account module
 import base64
 
 app = Flask(__name__)
 
-# Initialize the Google TTS Client
-# The client will automatically find and use the credentials we set in Render.
-tts_client = texttospeech.TextToSpeechClient()
+# --- This is the fix ---
+# Manually load the credentials from the environment variable.
+try:
+    # Get the JSON string from the environment variable
+    credentials_json_str = os.environ.get('GOOGLE_APPLICATION_CREDENTIALS_JSON')
+    # Parse the JSON string into a dictionary
+    credentials_info = json.loads(credentials_json_str)
+    # Create credentials from the dictionary
+    credentials = service_account.Credentials.from_service_account_info(credentials_info)
+    # Initialize the client with the explicit credentials
+    tts_client = texttospeech.TextToSpeechClient(credentials=credentials)
+except Exception as e:
+    print(f"CRITICAL ERROR: Could not initialize Google TTS Client. {e}")
+    tts_client = None
+
 
 @app.route("/voice", methods=['POST'])
 def voice():
     """This function generates the voice response using Google TTS."""
     response = VoiceResponse()
 
-    # The text our agent will say.
     text_to_speak = "Hello, and welcome. This is a successful test of the Google Cloud Text-to-Speech API. The system is now fully operational."
 
-    # Set up the voice configuration
-    voice = texttospeech.VoiceSelectionParams(
-        language_code="en-US", ssml_gender=texttospeech.SsmlVoiceGender.NEUTRAL
-    )
-    audio_config = texttospeech.AudioConfig(
-        audio_encoding=texttospeech.AudioEncoding.MP3
-    )
+    # Check if the TTS client was initialized successfully
+    if not tts_client:
+        response.say("There is a critical configuration error with the voice service.", voice='alice')
+        response.hangup()
+        return str(response)
 
-    # Generate the audio from Google
-    synthesis_input = texttospeech.SynthesisInput(text=text_to_speak)
-    audio_response = tts_client.synthesize_speech(
-        input=synthesis_input, voice=voice, audio_config=audio_config
-    )
+    try:
+        voice = texttospeech.VoiceSelectionParams(language_code="en-US", name="en-US-Standard-C", ssml_gender=texttospeech.SsmlVoiceGender.FEMALE)
+        audio_config = texttospeech.AudioConfig(audio_encoding=texttospeech.AudioEncoding.MP3)
+        synthesis_input = texttospeech.SynthesisInput(text=text_to_speak)
+        audio_response = tts_client.synthesize_speech(input=synthesis_input, voice=voice, audio_config=audio_config)
 
-    # To play the audio without needing another URL, we encode it
-    # and embed it directly in the instruction for Twilio.
-    audio_base64 = base64.b64encode(audio_response.audio_content).decode('utf-8')
-    audio_data_uri = f"data:audio/mpeg;base64,{audio_base64}"
+        audio_base64 = base64.b64encode(audio_response.audio_content).decode('utf-8')
+        audio_data_uri = f"data:audio/mpeg;base64,{audio_base64}"
 
-    # Play the embedded audio
-    response.play(audio_data_uri)
-    response.hangup()
+        response.play(audio_data_uri)
+        response.hangup()
+    except Exception as e:
+        print(f"Error during TTS synthesis: {e}")
+        response.say("An error occurred while generating the voice response.", voice='alice')
+        response.hangup()
 
     return str(response)
 
