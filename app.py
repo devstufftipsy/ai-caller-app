@@ -32,9 +32,7 @@ def generate_audio_stream(text_to_speak):
         "voice_settings": {"stability": 0.5, "similarity_boost": 0.75}
     }
 
-    # Use httpx to make the streaming request to ElevenLabs
     with httpx.stream("POST", url, json=data, headers=headers, timeout=20) as r:
-        # Yield each chunk of audio data as it's received
         for chunk in r.iter_bytes(chunk_size=1024):
             yield chunk
 
@@ -66,13 +64,15 @@ def voice():
         print(f"Error calling Groq: {e}")
 
     response = VoiceResponse()
+
+    # --- THIS IS THE FINAL FIX ---
+    # We now nest the <Play> command inside the <Gather> command.
+    gather = response.gather(input='speech', action='/voice', speechTimeout='auto', enhanced="true")
     encoded_text = quote(ai_response)
     audio_stream_url = f"{request.host_url}audio-stream?text={encoded_text}"
+    gather.play(audio_stream_url)
 
-    response.play(audio_stream_url)
-    # Add a gather to listen for the user's response after the audio plays
-    response.gather(input='speech', action='/voice', speechTimeout='auto', enhanced="true")
-    # Add a redirect in case the gather fails
+    # Add a redirect in case the gather times out without speech
     response.redirect('/voice')
 
     resp = app.make_response(str(response))
@@ -83,7 +83,6 @@ def voice():
 @app.route("/audio-stream")
 def audio_stream():
     text_to_speak = request.args.get("text", "Hello there!")
-    # Return the generator function wrapped in a Flask Response
     return Response(generate_audio_stream(text_to_speak), mimetype="audio/mpeg")
 
 @app.route('/make-call/<user_name>')
