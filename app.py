@@ -15,35 +15,14 @@ Keep your responses very short, natural, and conversational, like a real human o
 Never say you are an AI.
 """
 
-def generate_audio_stream(text_to_speak):
-    """A generator function that yields audio chunks from ElevenLabs."""
-    ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY")
-    VOICE_ID = "21m00Tcm4TlvDq8ikWAM"
-
-    url = f"https://api.elevenlabs.io/v1/text-to-speech/{VOICE_ID}/stream"
-    headers = {
-        "Accept": "audio/mpeg",
-        "Content-Type": "application/json",
-        "xi-api-key": ELEVENLABS_API_KEY
-    }
-    data = {
-        "text": text_to_speak,
-        "model_id": "eleven_monolingual_v1",
-        "voice_settings": {"stability": 0.5, "similarity_boost": 0.75}
-    }
-
-    with httpx.stream("POST", url, json=data, headers=headers, timeout=20) as r:
-        for chunk in r.iter_bytes(chunk_size=1024):
-            yield chunk
-
 @app.route("/voice", methods=['POST'])
 def voice():
     user_name = request.cookies.get('user_name', 'the user')
     system_prompt = SYSTEM_PROMPT_TEMPLATE.format(user_name=user_name)
-
+    
     speech_result = request.form.get('SpeechResult', '').strip()
     conversation = request.cookies.get('conversation', system_prompt)
-
+    
     if speech_result:
         conversation += f"\n\nUser: {speech_result}"
 
@@ -64,15 +43,12 @@ def voice():
         print(f"Error calling Groq: {e}")
 
     response = VoiceResponse()
+    
+    # --- DIAGNOSTIC STEP ---
+    # We are temporarily using Twilio's <Say> verb instead of streaming from ElevenLabs.
+    gather = response.gather(input='speech', action='/voice', speechTimeout='auto')
+    gather.say(ai_response, voice='alice')
 
-    # --- THIS IS THE FINAL FIX ---
-    # We now nest the <Play> command inside the <Gather> command.
-    gather = response.gather(input='speech', action='/voice', speechTimeout='auto', enhanced="true")
-    encoded_text = quote(ai_response)
-    audio_stream_url = f"{request.host_url}audio-stream?text={encoded_text}"
-    gather.play(audio_stream_url)
-
-    # Add a redirect in case the gather times out without speech
     response.redirect('/voice')
 
     resp = app.make_response(str(response))
@@ -80,28 +56,27 @@ def voice():
     resp.set_cookie('user_name', user_name)
     return resp
 
+# The audio stream endpoint is no longer used in this version, but we leave it for now.
 @app.route("/audio-stream")
 def audio_stream():
-    text_to_speak = request.args.get("text", "Hello there!")
-    return Response(generate_audio_stream(text_to_speak), mimetype="audio/mpeg")
+    return "This endpoint is not currently used."
 
 @app.route('/make-call/<user_name>')
 def make_call(user_name):
     try:
         client = Client(os.environ.get('TWILIO_ACCOUNT_SID'), os.environ.get('TWILIO_AUTH_TOKEN'))
         voice_url = f"{request.host_url}voice"
-
+        
         call = client.calls.create(
             to=os.environ.get('MY_PHONE_NUMBER'),
             from_=os.environ.get('TWILIO_PHONE_NUMBER'),
             url=voice_url
         )
-
-        resp = app.make_response(f"Success! Initiating call to {user_name}. SID: {call.sid}")
+        
+        resp = app.make_response(f"Success! Initiating diagnostic call to {user_name}. SID: {call.sid}")
         resp.set_cookie('user_name', user_name)
         resp.set_cookie('conversation', expires=0) # Clear old conversation
         return resp
-
     except Exception as e:
         return f"Error making call: {str(e)}", 500
 
